@@ -1,0 +1,20 @@
+%%%-------------------------------------------------------------------
+%%% @author erow
+%%% @copyright (C) 2017, <COMPANY>
+%%% @doc
+%%%
+%%% @end
+%%% Created : 07. 四月 2017 16:38
+%%%-------------------------------------------------------------------
+{application, upp_app, [
+  {description, ""},
+  {vsn, "1"},
+  {registered, []},
+  {applications, [
+    kernel,
+    stdlib,
+    lager
+  ]},
+  {mod, {upp_app, []}},
+  {env, []}
+]}.
