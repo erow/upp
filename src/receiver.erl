@@ -9,161 +9,73 @@
 -module(receiver).
 -author("erow").
 
--behaviour(gen_server).
--compile([{parse_transform, lager_transform}]).
+-behaviour(window).
+-include("protocol.hrl").
 %% API
--export([start_link/0,recv/3]).
+-export([start_link/1]).
 
 %% gen_server callbacks
--export([init/1,
-  handle_call/3,
-  handle_cast/2,
-  handle_info/2,
-  terminate/2,
-  code_change/3]).
+-export([init/1, message/2, confirm/2, loss/2, insert/3, slide/2]).
+
 
 -define(SERVER, ?MODULE).
 
 -record(state, {
-  controler :: pid(),
-  receive_window = slide_window:new(10),
-  buffer = <<>> :: binary(),
-  sequence= 1 :: integer(),
-  t = 200 :: integer(),
-  largest_ack_sequence=1::integer()
+  socket :: integer(),
+  buffer = <<>>,
+  sequence = 1 :: integer(),
+  packet_size = 1024 :: integer()
 }).
 
 %%%===================================================================
 %%% API
 %%%===================================================================
-recv(Ref,Sequence,Data)->
-  gen_server:cast(Ref,{recv,Sequence,Data}).
-%%--------------------------------------------------------------------
-%% @doc
-%% Starts the server
-%%
-%% @end
-%%--------------------------------------------------------------------
--spec(start_link() ->
+send(Ref, Data) ->
+  gen_server:cast(Ref, {send, Data}).
+
+%%%===================================================================
+%%%  callbacks
+%%%===================================================================
+-spec(start_link(Socket :: integer()) ->
   {ok, Pid :: pid()} | ignore | {error, Reason :: term()}).
-start_link() ->
-  gen_server:start_link(?MODULE, [self()], []).
+start_link(Socket) ->
+  window:start_link(?MODULE, [Socket], []).
 
-%%%===================================================================
-%%% gen_server callbacks
-%%%===================================================================
+init([Socket]) ->
+  #state{socket = Socket}.
 
-%%--------------------------------------------------------------------
-%% @private
-%% @doc
-%% Initializes the server
-%%
-%% @spec init(Args) -> {ok, State} |
-%%                     {ok, State, Timeout} |
-%%                     ignore |
-%%                     {stop, Reason}
-%% @end
-%%--------------------------------------------------------------------
--spec(init(Args :: term()) ->
-  {ok, State :: #state{}} | {ok, State :: #state{}, timeout() | hibernate} |
-  {stop, Reason :: term()} | ignore).
-init([Controler]) ->
-  {ok, #state{controler = Controler}}.
+confirm(ConfirmList, State = #state{socket = _Socket}) ->
+  DataList = [Data || {_, _, Data} <- ConfirmList],
+  lager:debug("confirm:~p", [ConfirmList]),
+  udt:get_data(DataList),
+  State.
 
-%%--------------------------------------------------------------------
-%% @private
-%% @doc
-%% Handling call messages
-%%
-%% @end
-%%--------------------------------------------------------------------
--spec(handle_call(Request :: term(), From :: {pid(), Tag :: term()},
-    State :: #state{}) ->
-  {reply, Reply :: term(), NewState :: #state{}} |
-  {reply, Reply :: term(), NewState :: #state{}, timeout() | hibernate} |
-  {noreply, NewState :: #state{}} |
-  {noreply, NewState :: #state{}, timeout() | hibernate} |
-  {stop, Reason :: term(), Reply :: term(), NewState :: #state{}} |
-  {stop, Reason :: term(), NewState :: #state{}}).
-handle_call(_Request, _From, State) ->
-  {reply, ok, State}.
+slide(Len, State = #state{
+  sequence = Seq
+}) ->
+  NewSeq = Seq + Len,
+  {ignore, State#state{sequence = NewSeq}}.
 
-%%--------------------------------------------------------------------
-%% @private
-%% @doc
-%% Handling cast messages
-%%
-%% @end
-%%--------------------------------------------------------------------
--spec(handle_cast(Request :: term(), State :: #state{}) ->
-  {noreply, NewState :: #state{}} |
-  {noreply, NewState :: #state{}, timeout() | hibernate} |
-  {stop, Reason :: term(), NewState :: #state{}}).
-handle_cast({recv,Sequence,Data}, State=#state{controler = _Controler,receive_window = RecvWindow}) ->
-  lager:debug("~p",[{recv,Sequence,Data}]),
-  case slide_window:insert(Sequence,Data,RecvWindow) of
-    {{slide,DataList},NewWindow}->
-      upp_controler:get_data(DataList),
-      upp_controler:ack(Sequence),
-      Lasn=slide_window:lasn(NewWindow),
-      {noreply, State#state{receive_window = NewWindow,largest_ack_sequence = Lasn}};
-    {ok,NewWindow}->
-      upp_controler:ack(Sequence),
-      {noreply, State#state{receive_window = NewWindow}};
-    {ignore,NewWindow}->
-      {noreply, State#state{receive_window = NewWindow}}
-  end.
+loss(LossList, State = #state{socket = Socket}) ->
+  lager:debug("loss ~p", [LossList]),
+  LossSeq = [Seq || {Seq, _Timestamp, _Data} <- LossList],
+  udt:send_packet(Socket, #nak{
+    destination_socket_id = Socket,
+    timestamp = protocol:timestamp(),
+    loss_list = LossSeq}),
+  State.
 
-%%--------------------------------------------------------------------
-%% @private
-%% @doc
-%% Handling all non call/cast messages
-%%
-%% @spec handle_info(Info, State) -> {noreply, State} |
-%%                                   {noreply, State, Timeout} |
-%%                                   {stop, Reason, State}
-%% @end
-%%--------------------------------------------------------------------
--spec(handle_info(Info :: timeout() | term(), State :: #state{}) ->
-  {noreply, NewState :: #state{}} |
-  {noreply, NewState :: #state{}, timeout() | hibernate} |
-  {stop, Reason :: term(), NewState :: #state{}}).
-handle_info(timeout, State=#state{t=Interval}) ->
-  {noreply, State,Interval};
-handle_info(_Info, State) ->
-  lager:warning("~p :~p",[_Info,State]),
-  {noreply, State}.
+insert(Seq, _Item, State = #state{socket = Socket}) ->
+  lager:debug("recv ~p", [Seq]),
+  udt:send_packet(Socket,
+    #ack_packet{destination_socket_id = Socket,
+      timestamp = protocol:timestamp(),
+      previous_packets_received = Seq}),
+  State.
 
-%%--------------------------------------------------------------------
-%% @private
-%% @doc
-%% This function is called by a gen_server when it is about to
-%% terminate. It should be the opposite of Module:init/1 and do any
-%% necessary cleaning up. When it returns, the gen_server terminates
-%% with Reason. The return value is ignored.
-%%
-%% @spec terminate(Reason, State) -> void()
-%% @end
-%%--------------------------------------------------------------------
--spec(terminate(Reason :: (normal | shutdown | {shutdown, term()} | term()),
-    State :: #state{}) -> term()).
-terminate(_Reason, _State) ->
-  ok.
+message(no, State = #state{buffer = Buffer}) ->
+  State.
 
-%%--------------------------------------------------------------------
-%% @private
-%% @doc
-%% Convert process state when code is changed
-%%
-%% @spec code_change(OldVsn, State, Extra) -> {ok, NewState}
-%% @end
-%%--------------------------------------------------------------------
--spec(code_change(OldVsn :: term() | {down, term()}, State :: #state{},
-    Extra :: term()) ->
-  {ok, NewState :: #state{}} | {error, Reason :: term()}).
-code_change(_OldVsn, State, _Extra) ->
-  {ok, State}.
 
-%%%===================================================================
-%%% Internal functions
-%%%===================================================================
+
+
