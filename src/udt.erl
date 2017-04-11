@@ -139,10 +139,10 @@ handle_cast(window_change, State = #state{
   sequence = Seq,
   packet_size = PacketSize,
   send_buffer = SendBuffer}) ->
-  Len = window:remain_capacity(Sender),
+  Len = slide_window:remain_capacity(Sender),
   {Rest, StoreList} = split_data(Len, SendBuffer, PacketSize, []),
   NewSeq = lists:foldl(fun(Data, S) ->
-    window:store(Sender, S, Data),
+    slide_window:store(Sender, S, Data),
     S + 1 end, Seq, StoreList),
   {noreply, State#state{sequence = NewSeq, send_buffer = Rest}};
 handle_cast({send_packet, Packet}, State) ->
@@ -221,13 +221,13 @@ handle_send_packet(Packet, State = #state{}) ->
   {noreply, State}.
 
 handle_recv_packet(#data_packet{sequence_number = Seq, payload = Data}, State = #state{receiver = Receiver}) ->
-  window:store(Receiver, Seq, Data),
+  slide_window:store(Receiver, Seq, Data),
   {noreply, State};
 handle_recv_packet(#ack2_packet{ack_sequence = AckSeq}, State = #state{receiver = Receiver}) ->
-  window:ack(Receiver, AckSeq),
+  slide_window:ack(Receiver, AckSeq),
   {noreply, State};
 handle_recv_packet(#ack_packet{previous_packets_received = Seq}, State = #state{sender = Sender}) ->
-  window:ack(Sender, Seq),
+  slide_window:ack(Sender, Seq),
   {noreply, State};
 handle_recv_packet(#handshake_packet{}, State) ->
   {noreply, State}.

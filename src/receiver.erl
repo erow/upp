@@ -9,7 +9,7 @@
 -module(receiver).
 -author("erow").
 
--behaviour(window).
+-behaviour(slide_window).
 -include("protocol.hrl").
 %% API
 -export([start_link/1]).
@@ -39,7 +39,7 @@ send(Ref, Data) ->
 -spec(start_link(Socket :: integer()) ->
   {ok, Pid :: pid()} | ignore | {error, Reason :: term()}).
 start_link(Socket) ->
-  window:start_link(?MODULE, [Socket], []).
+  slide_window:start_link(?MODULE, [Socket], []).
 
 init([Socket]) ->
   #state{socket = Socket}.

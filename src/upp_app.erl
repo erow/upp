@@ -37,7 +37,7 @@ start()->
   {ok, pid(), State :: term()} |
   {error, Reason :: term()}).
 start(_StartType, _StartArgs) ->
-  case upp_controler:start_link() of
+  case upp_sup:start_link() of
     {ok, Pid} ->
       {ok, Pid};
     Error ->
