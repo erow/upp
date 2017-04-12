@@ -63,7 +63,7 @@ init([]) ->
 
   SupFlags = {RestartStrategy, MaxRestarts, MaxSecondsBetweenRestarts},
 
-  {ok, {SupFlags, [?CHLD(worker, udt), ?CHLD(worker, upp_transfer_test)]}}.
+  {ok, {SupFlags, [?CHLD(worker, udt), ?CHLD(worker, udp_transfer)]}}.
 
 %%%===================================================================
 %%% Internal functions

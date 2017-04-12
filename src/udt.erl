@@ -12,7 +12,7 @@
 -behaviour(gen_server).
 -include("protocol.hrl").
 %% API
--export([start_link/0, send_packet/2, recv_packet/2, send/1, recv/0, listen/1, connect/2, window_change/0, get_data/1]).
+-export([start_link/0, send_packet/2, recv_packet/2, send/1, recv/0, listen/1, connect/2, seq_change/0, get_data/1]).
 
 %% gen_server callbacks
 -export([init/1,
@@ -40,7 +40,8 @@ listen(Port) ->
   gen_server:call(?SERVER, {listen, Port}).
 
 connect(Ip, Port) ->
-  gen_server:call(?SERVER, {connect, Ip, Port}).
+  {ok, Addr} = inet:parse_ipv4_address(Ip),
+  gen_server:call(?SERVER, {connect, Addr, Port}).
 
 %%这里多路复用的时候需要用到。不打算实现了。
 send_packet(_S, Packet) ->
@@ -55,8 +56,8 @@ send(Data) ->
 recv() ->
   gen_server:call(?SERVER, recv).
 
-window_change() ->
-  gen_server:cast(?SERVER, window_change).
+seq_change() ->
+  gen_server:cast(?SERVER, seq_change).
 
 get_data(DataList) ->
   gen_server:cast(?SERVER, {get_data, DataList}).
@@ -121,7 +122,7 @@ handle_call(recv, _From, State = #state{recv_buffer = RecvBuffer}) ->
   {reply, {ok, RecvBuffer}, State#state{recv_buffer = <<>>}};
 handle_call({send, Data}, From, State = #state{send_buffer = Buffer}) ->
   gen_server:reply(From, ok),
-  handle_cast(window_change, State#state{send_buffer = <<Buffer/binary, Data/binary>>}).
+  handle_cast(seq_change, State#state{send_buffer = <<Buffer/binary, Data/binary>>}).
 
 %%--------------------------------------------------------------------
 %% @private
@@ -134,7 +135,7 @@ handle_call({send, Data}, From, State = #state{send_buffer = Buffer}) ->
   {noreply, NewState :: #state{}} |
   {noreply, NewState :: #state{}, timeout() | hibernate} |
   {stop, Reason :: term(), NewState :: #state{}}).
-handle_cast(window_change, State = #state{
+handle_cast(seq_change, State = #state{
   sender = Sender,
   sequence = Seq,
   packet_size = PacketSize,
@@ -144,13 +145,16 @@ handle_cast(window_change, State = #state{
   NewSeq = lists:foldl(fun(Data, S) ->
     slide_window:store(Sender, S, Data),
     S + 1 end, Seq, StoreList),
+  lager:info("window_change ~p to ~p:~p", [Seq, NewSeq, {remain_capacity, Len}]),
+
   {noreply, State#state{sequence = NewSeq, send_buffer = Rest}};
 handle_cast({send_packet, Packet}, State) ->
   handle_send_packet(Packet, State);
 handle_cast({recv_packet, RawData}, State) ->
   try protocol:decode_packet(RawData) of
     Packet ->
-      lager:info("recv_packet ~p", [element(1, Packet)]),
+      lager:info("recv_packet:~p", [element(1, Packet)]),
+        catch lager:info("recv_packet seq: ~p", [element(4, Packet)]),
       handle_recv_packet(Packet, State)
   catch
     Exception ->
@@ -215,16 +219,15 @@ code_change(_OldVsn, State, _Extra) ->
 
 handle_send_packet(Packet, State = #state{}) ->
   lager:debug("~p", [{send_packet, element(1, Packet)}]),
-  lager:debug("~p", [{send_packet, Packet}]),
   Socket = element(3, Packet),
-  upp_transfer_test:send_data(Socket, protocol:encode_packet(Packet)),
+  udp_transfer:send_data(Socket, protocol:encode_packet(Packet)),
   {noreply, State}.
 
 handle_recv_packet(#data_packet{sequence_number = Seq, payload = Data}, State = #state{receiver = Receiver}) ->
   slide_window:store(Receiver, Seq, Data),
   {noreply, State};
 handle_recv_packet(#ack2_packet{ack_sequence = AckSeq}, State = #state{receiver = Receiver}) ->
-  slide_window:ack(Receiver, AckSeq),
+  slide_window:ack_before(Receiver, AckSeq),
   {noreply, State};
 handle_recv_packet(#ack_packet{previous_packets_received = Seq}, State = #state{sender = Sender}) ->
   slide_window:ack(Sender, Seq),

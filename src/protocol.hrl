@@ -10,11 +10,11 @@
 
 
 -record(data_packet, {
+  timestamp,
+  destination_socket_id = 0,
   sequence_number,
   packet_flag = 0,
   message_number = 0,
-  timestamp,
-  destination_socket_id = 0,
   payload
 }).
 

@@ -12,7 +12,7 @@
 -behaviour(application).
 
 %% Application callbacks
--export([start/2,start/0,
+-export([start/2, start/0, test/0,
   stop/1]).
 
 %%%===================================================================
@@ -20,6 +20,11 @@
 %%%===================================================================
 start()->
   application:ensure_all_started(upp_app).
+
+test() ->
+  udt:connect("104.236.178.152", 8000),
+  {ok, F} = file:read_file("erl_crash.dump"),
+  udt:send(F).
 %%--------------------------------------------------------------------
 %% @private
 %% @doc

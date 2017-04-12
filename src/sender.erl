@@ -41,18 +41,17 @@ start_link(Socket) ->
 init([Socket]) ->
   #state{socket = Socket}.
 
-confirm(_ConfirmList, State = #state{socket = _Socket}) ->
-  [udt:send_packet(socket,
-    #ack2_packet{timestamp = protocol:timestamp(), ack_sequence = Seq}) ||
-    {Seq, _, _} <- _ConfirmList],
+confirm(ConfirmList, State = #state{socket = _Socket}) ->
+  Seq = lists:max([Seq || {Seq, _, _} <- ConfirmList]),
+  udt:send_packet(socket, #ack2_packet{timestamp = protocol:timestamp(), ack_sequence = Seq + 1}),
   State.
 
 slide(_Len, State = #state{}) ->
-  udt:window_change(),
+  udt:seq_change(),
   {ignore, State}.
 
 loss(LossList, State = #state{}) ->
-  lager:debug("loss ~p", [LossList]),
+  lager:debug("loss ~w", [{[Seq || {Seq, _, _} <- LossList]}]),
   [udt:send_packet(1, #data_packet{
     sequence_number = Seq, timestamp = Timestamp, payload = Data})
     || {Seq, Timestamp, Data} <- LossList],

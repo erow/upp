@@ -12,7 +12,7 @@
 -behaviour(gen_server).
 
 %% API
--export([start_link/3, store/3, ack/2, remain_capacity/1, unack_list/1, previours_ack/1]).
+-export([start_link/3, store/3, ack_before/2, remain_capacity/1, unack_list/1, previours_ack/1, ack/2]).
 
 %% gen_server callbacks
 -export([init/1,
@@ -32,6 +32,7 @@
   size = 10 :: integer(),
   begin_seq = 1 :: integer(),
   largest_received_seq = 0 :: integer(),
+  lagest_store_seq = 0 :: integer(),
   rto = 600 :: integer(),
   last_check_timestamp = 0 :: integer(),
   t = 200 :: integer(),
@@ -74,6 +75,9 @@ store(Ref, Seq, Item) ->
 
 ack(Ref, Seq) ->
   gen_server:call(Ref, {ack, Seq}).
+
+ack_before(Ref, Seq) ->
+  gen_server:call(Ref, {ack_before, Seq}).
 
 remain_capacity(Ref) ->
   gen_server:call(Ref, remain_capacity).
@@ -144,8 +148,8 @@ init([Mod, Args, _Opt]) ->
 handle_call(previours_ack, From, State = #state{begin_seq = BeginSeq}) ->
   gen_server:reply(From, BeginSeq),
   handle_check(State);
-handle_call(remain_capacity, From, State = #state{begin_seq = BeginSeq, size = Size, largest_received_seq = Lasn}) ->
-  gen_server:reply(From, Size + BeginSeq - Lasn - 1),
+handle_call(remain_capacity, From, State = #state{begin_seq = BeginSeq, size = Size, lagest_store_seq = Lssn}) ->
+  gen_server:reply(From, Size + BeginSeq - Lssn - 1),
   handle_check(State);
 handle_call(unack_list, From, State = #state{array_tab = Tab}) ->
   gen_server:reply(From, ets:tab2list(Tab)),
@@ -153,10 +157,10 @@ handle_call(unack_list, From, State = #state{array_tab = Tab}) ->
 handle_call({store, Seq, _Item}, From, State = #state{begin_seq = BeginSeq, size = Size}) when Seq < BeginSeq orelse Seq >= BeginSeq + Size ->
   gen_server:reply(From, ignore),
   handle_check(State);
-handle_call({store, Seq, Item}, From, State = #state{}) ->
+handle_call({store, Seq, Item}, From, State = #state{lagest_store_seq = Lssn}) ->
   NewExtState = insert_data(Seq, Item, State),
   gen_server:reply(From, ok),
-  handle_check(State#state{ext_state = NewExtState});
+  handle_check(State#state{ext_state = NewExtState, lagest_store_seq = max(Lssn, Seq)});
 handle_call({ack, Seq}, From, State = #state{begin_seq = BeginSeq}) when Seq < BeginSeq ->
   lager:warning("smaller ack_seq:~p", [Seq]),
   gen_server:reply(From, ignore),
@@ -165,14 +169,43 @@ handle_call({ack, Seq}, From, State = #state{begin_seq = BeginSeq, size = Size})
   lager:warning("bigger ack_seq:~p", [Seq]),
   gen_server:reply(From, wrong),
   handle_check(State);
+handle_call({ack_before, Seq}, From, State = #state{begin_seq = BeginSeq, size = Size}) when Seq < BeginSeq orelse Seq >= BeginSeq + Size ->
+  gen_server:reply(From, ignore),
+  lager:info("ack_before ignore"),
+  handle_check(State);
+handle_call({ack_before, Seq}, From, State = #state{
+  array_tab = Tab,
+  begin_seq = BeginSeq,
+  take_list = TakeList,
+  largest_received_seq = Lrsn}) ->
+  gen_server:reply(From, ok),
+  case lists:filtermap(fun
+                         (Seq1) ->
+                           case ets:take(Tab, Seq1) of
+                             [] ->
+                               false;
+                             [Item] ->
+                               {true, Item}
+                           end
+                       end, lists:seq(BeginSeq, Seq)) of
+    [] ->
+      handle_check(State);
+    Item ->
+      lager:debug("take,~p", [[S || {S, _, _} <- Item]]),
+      handle_check(State#state{take_list = Item ++ TakeList, largest_received_seq = max(Lrsn, Seq - 1)})
+  end;
 handle_call({ack, Seq}, From, State = #state{
   array_tab = Tab,
   take_list = TakeList,
   largest_received_seq = Lrsn}) ->
   gen_server:reply(From, ok),
-  [Item] = ets:take(Tab, Seq),
-  lager:debug("take,~p", [Item]),
-  handle_check(State#state{take_list = [Item | TakeList], largest_received_seq = max(Lrsn, Seq)});
+  case ets:take(Tab, Seq) of
+    [] ->
+      handle_check(State);
+    [Item] ->
+%%      lager:debug("take,~p", [Item]),
+      handle_check(State#state{take_list = [Item | TakeList], largest_received_seq = max(Lrsn, Seq)})
+  end;
 handle_call({change_config, _Conf, _Value}, From, State) ->
   gen_server:reply(From, ignore),
   handle_check(State);
@@ -273,15 +306,16 @@ handle_check_slide_window(State = #state{array_tab = Tab, begin_seq = BeginSeq, 
           handle_check_retransmit(State);
         _ ->
           ConfirmList = [T || T = {Seq, _, _} <- TakeList, Seq < NewBeginSeq],
-          lager:debug("slide ~p to ~p", [BeginSeq, NewBeginSeq]),
-          lager:debug("~p", [{confirmlist, ConfirmList}, {takelist, TakeList}]),
+          Remain = [T || T = {Seq, _, _} <- TakeList, Seq > NewBeginSeq],
+          lager:debug("slide ~p to ~p:~p", [BeginSeq, NewBeginSeq, {largest_received_seq, Lasn}]),
+%%          lager:debug("~p", [{{confirmlist, ConfirmList}, {takelist, TakeList}}]),
           #state{mod = Mod, ext_state = ExtState} = State,
           NewExtState = Mod:confirm(ConfirmList, ExtState),
           case Mod:slide(length(ConfirmList), NewExtState) of
             {ignore, NewExtState1} ->
               handle_check_retransmit(State#state{
                 begin_seq = NewBeginSeq,
-                take_list = [Seq || Seq <- TakeList, Seq > NewBeginSeq],
+                take_list = Remain,
                 ext_state = NewExtState1})
           end
       end
@@ -299,7 +333,7 @@ handle_check_retransmit(State = #state{
     [] ->
       handle_check_end(State);
     Losslist ->
-      lager:info("losslist:~p", [Losslist]),
+      lager:info("losslist:~w", [[Seq || {Seq, _, _} <- Losslist]]),
       #state{mod = Mod, ext_state = ExtState} = State,
       NewExtState = Mod:loss(Losslist, ExtState),
       handle_check_end(State#state{ext_state = NewExtState})

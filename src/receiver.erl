@@ -46,7 +46,8 @@ init([Socket]) ->
 
 confirm(ConfirmList, State = #state{socket = _Socket}) ->
   DataList = [Data || {_, _, Data} <- ConfirmList],
-  lager:debug("confirm:~p", [ConfirmList]),
+  Seq = lists:max([Seq || {Seq, _, _} <- ConfirmList]),
+  lager:debug("confirm:~p", [[Seq || {Seq, _, _} <- ConfirmList]]),
   udt:get_data(DataList),
   State.
 
@@ -57,16 +58,16 @@ slide(Len, State = #state{
   {ignore, State#state{sequence = NewSeq}}.
 
 loss(LossList, State = #state{socket = Socket}) ->
-  lager:debug("loss ~p", [LossList]),
-  LossSeq = [Seq || {Seq, _Timestamp, _Data} <- LossList],
-  udt:send_packet(Socket, #nak{
-    destination_socket_id = Socket,
-    timestamp = protocol:timestamp(),
-    loss_list = LossSeq}),
+  lager:debug("loss ~w", [{[Seq || {Seq, _, _} <- LossList]}]),
+%%  LossSeq = [Seq || {Seq, _Timestamp, _Data} <- LossList],
+%%  udt:send_packet(Socket, #nak{
+%%    destination_socket_id = Socket,
+%%    timestamp = protocol:timestamp(),
+%%    loss_list = LossSeq}),
   State.
 
 insert(Seq, _Item, State = #state{socket = Socket}) ->
-  lager:debug("recv ~p", [Seq]),
+  lager:debug("recv ~w", [Seq]),
   udt:send_packet(Socket,
     #ack_packet{destination_socket_id = Socket,
       timestamp = protocol:timestamp(),

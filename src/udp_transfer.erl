@@ -109,7 +109,7 @@ handle_call(forbidden, _From, State) ->
   {noreply, NewState :: #state{}, timeout() | hibernate} |
   {stop, Reason :: term(), NewState :: #state{}}).
 handle_cast({allocate, Socket, Ip, Port}, State = #state{socket_tab = Tab}) ->
-  ets:insert(Tab, {Socket, Ip, Port}),
+  ets:insert(Tab, {{Ip, Port}, Socket}),
   handle_check(State);
 handle_cast({send_data, _Socket, RawData}, State = #state{send_queue = Queue}) ->
   handle_check(State#state{send_queue = queue:in({_Socket, RawData}, Queue)}).
@@ -133,7 +133,8 @@ handle_info({udp, _Socket, Ip, Port, RawData}, State = #state{socket_tab = Tab})
     [{{Ip, Port}, Ref}] ->
       udt:recv_packet(Ref, RawData);
     [] ->
-      ets:insert(Tab, {Ip, Port})
+      ets:insert(Tab, {{Ip, Port}, 0}),
+      udt:recv_packet(0, RawData)
   end,
   handle_check(State);
 handle_info(_Info, State) ->
@@ -185,7 +186,7 @@ handle_check(State = #state{last_check_time = LastTime,
     Count < Rate ->
       case queue:out(Queue) of
         {{value, {_, RawData}}, Q1} ->
-          [{Ip, Port}] = ets:tab2list(Tab),
+          [{{Ip, Port}, _}] = ets:tab2list(Tab),
           gen_udp:send(S, Ip, Port, RawData),
           handle_check(State#state{count = Count + 1, send_queue = Q1});
         {empty, _} ->
@@ -194,3 +195,5 @@ handle_check(State = #state{last_check_time = LastTime,
     true ->
       {noreply, State, ?interval}
   end.
+
+
